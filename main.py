@@ -18,7 +18,7 @@ app.add_middleware(
 )
 
 MONGODB_URI = os.environ.get("MONGODB_URI")
-RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
+RAZORPAY_WEBHOOK_KEY = os.environ.get("RAZORPAY_WEBHOOK_KEY")
 
 def get_db():
     client = MongoClient(MONGODB_URI)
@@ -34,7 +34,7 @@ async def razorpay_webhook(request: Request):
     signature = request.headers.get("X-Razorpay-Signature", "")
 
     expected = hmac.new(
-        RAZORPAY_WEBHOOK_SECRET.encode(),
+        RAZORPAY_WEBHOOK_KEY.encode(),
         body,
         hashlib.sha256
     ).hexdigest()
