@@ -186,96 +186,46 @@ async def create_payment(req: AnalysisRequest):
 
 @app.get("/pay/{report_id}", response_class=HTMLResponse)
 async def pay_page(report_id: str):
+    """Create a Razorpay payment link and redirect user to it."""
     rec = get_db()["reports"].find_one({"report_id": report_id})
     if not rec:
         return HTMLResponse("<h2>Report not found or expired.</h2>", status_code=404)
-    project_name = rec.get("project_name", "Project")
-    mode = rec.get("mode", "")
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-  <title>Download Report — Deep Excavation Tool</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body {{ font-family: sans-serif; max-width: 500px; margin: 80px auto; padding: 20px; text-align: center; }}
-    h2 {{ color: #2c3e50; }}
-    p {{ color: #555; }}
-    .btn {{ background: #2ecc71; color: white; padding: 14px 32px; font-size: 18px;
-            font-weight: 700; border: none; border-radius: 8px; cursor: pointer; width: 100%; }}
-    .btn:hover {{ background: #27ae60; }}
-    .note {{ font-size: 13px; color: #888; margin-top: 12px; }}
-  </style>
-  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-</head>
-<body>
-  <h2>🏗️ Deep Excavation Tool</h2>
-  <p><b>{project_name}</b> — {mode}</p>
-  <p>Your calculation report is ready. Pay ₹1 to download.</p>
-  <button class="btn" onclick="pay()">💳 Pay ₹1 &amp; Download Report</button>
-  <p class="note">Secure payment via Razorpay. Download starts immediately after payment.</p>
-  <script>
-    function pay() {{
-      var options = {{
-        key: "{RAZORPAY_KEY_ID}",
-        amount: {REPORT_AMOUNT_PAISE},
-        currency: "INR",
-        name: "Deep Excavation Tool",
-        description: "{project_name} — {mode}",
-        handler: function(response) {{
-          // Verify and download
-          fetch("/verify-and-download/{report_id}", {{
-            method: "POST",
-            headers: {{"Content-Type": "application/json"}},
-            body: JSON.stringify({{
-              payment_id: response.razorpay_payment_id,
-              order_id: response.razorpay_order_id || "",
-              signature: response.razorpay_signature || ""
-            }})
-          }})
-          .then(r => r.blob())
-          .then(blob => {{
-            var url = window.URL.createObjectURL(blob);
-            var a = document.createElement("a");
-            a.href = url;
-            a.download = "{project_name.replace(' ','_')}_{mode.replace(' ','_')}_Report.docx";
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.querySelector("p").innerText = "✅ Download started!";
-          }})
-          .catch(e => alert("Download failed: " + e));
-        }},
-        theme: {{ color: "#2ecc71" }}
-      }};
-      var rzp = new Razorpay(options);
-      rzp.open();
-    }}
-  </script>
-</body>
-</html>"""
-    return HTMLResponse(html)
 
-@app.post("/verify-and-download/{report_id}")
-async def verify_and_download(report_id: str, request: Request):
-    body = await request.json()
-    payment_id = body.get("payment_id", "")
-
-    # Verify payment with Razorpay API
     import razorpay
     client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
-    try:
-        payment = client.payment.fetch(payment_id)
-        if payment["status"] != "captured":
-            # Auto-capture
-            client.payment.capture(payment_id, payment["amount"])
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Payment verification failed: {e}")
+    callback_url = f"https://deepexc-backend.onrender.com/download/{report_id}"
+    plink = client.payment_link.create({
+        "amount": REPORT_AMOUNT_PAISE,
+        "currency": "INR",
+        "description": f"Deep Excavation Report — {rec.get('project_name','Project')}",
+        "callback_url": callback_url,
+        "callback_method": "get",
+    })
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=plink["short_url"])
+
+@app.get("/download/{report_id}")
+async def download_report(report_id: str, request: Request):
+    """Razorpay redirects here after payment with signature params."""
+    params = dict(request.query_params)
+    plink_id  = params.get("razorpay_payment_link_id", "")
+    ref_id    = params.get("razorpay_payment_link_reference_id", "")
+    status    = params.get("razorpay_payment_link_status", "")
+    signature = params.get("razorpay_signature", "")
+
+    if not plink_id or not signature:
+        raise HTTPException(status_code=400, detail="Missing payment parameters")
+
+    payload = f"{plink_id}|{ref_id}|{status}"
+    mac = hmac.new(RAZORPAY_KEY_SECRET.encode(), payload.encode(), hashlib.sha256)
+    if not hmac.compare_digest(mac.hexdigest(), signature):
+        raise HTTPException(status_code=400, detail="Invalid payment signature")
 
     rec = get_db()["reports"].find_one({"report_id": report_id})
     if not rec:
         raise HTTPException(status_code=404, detail="Report not found")
 
     get_db()["reports"].update_one({"report_id": report_id}, {"$set": {"paid": True}})
-
     fname = f"{rec['project_name'].replace(' ','_')}_{rec['mode'].replace(' ','_')}_Report.docx"
     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return StreamingResponse(
