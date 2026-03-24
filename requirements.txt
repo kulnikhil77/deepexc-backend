@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pymongo[srv]
+python-multipart
+razorpay
+python-docx
+numpy
+pandas
+matplotlib
+requests
